@@ -370,24 +370,30 @@ async function callWhisper(fileOrBlob, key, filename, timeOffset = 0) {
 // ─── TRANSCRIPT FORMATTING ────────────────────────────────────────────────────
 function formatSegments(segments) {
   if (!segments || segments.length === 0) return '';
-  let result = '';
+  const BREAK_GAP    = 1.5;  // new paragraph on silence gap (seconds)
+  const BREAK_EVERY  = 60;   // also break at least every 60 seconds
+
+  let result    = '';
   let paraTexts = [];
   let paraStart = segments[0].start;
+  let lastBreak = segments[0].start;
 
   for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const prev = segments[i - 1];
-    const gap = prev ? seg.start - prev.end : 0;
+    const seg     = segments[i];
+    const prev    = segments[i - 1];
+    const gap     = prev ? seg.start - prev.end : 0;
+    const elapsed = seg.start - lastBreak;
 
-    if (i > 0 && gap > 1.5) {
-      result += `[${fmtTimestamp(paraStart)}] ${paraTexts.join(' ')}\n\n`;
+    if (i > 0 && (gap > BREAK_GAP || elapsed >= BREAK_EVERY)) {
+      result   += `[${fmtTimestamp(paraStart)}]  ${paraTexts.join(' ')}\n\n`;
       paraTexts = [];
       paraStart = seg.start;
+      lastBreak = seg.start;
     }
     paraTexts.push(seg.text.trim());
   }
   if (paraTexts.length > 0) {
-    result += `[${fmtTimestamp(paraStart)}] ${paraTexts.join(' ')}`;
+    result += `[${fmtTimestamp(paraStart)}]  ${paraTexts.join(' ')}`;
   }
   return result.trim();
 }
