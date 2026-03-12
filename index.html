@@ -13,6 +13,11 @@
     <span class="logo-word">Transcribe</span>
     <span class="logo-tag">powered by whisper-1</span>
   </div>
+  <div class="api-row">
+    <span class="api-label">OpenAI Key</span>
+    <input class="api-input" id="api-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+    <div class="api-status" id="api-status"></div>
+  </div>
 </header>
 
 <main>
@@ -84,12 +89,12 @@
 
 </main>
 
-<footer>AUDIO IS PROCESSED VIA A SECURE SERVER — YOUR FILES ARE NEVER STORED</footer>
+<footer>YOUR API KEY NEVER LEAVES YOUR BROWSER — ALL REQUESTS GO DIRECTLY TO OPENAI</footer>
 
 <script>
 // ─── STATE ────────────────────────────────────────────────────────────────────
-const MAX_BYTES = 4 * 1024 * 1024;  // 4 MB (Vercel serverless body limit)
-const CHUNK_DURATION_SEC = 120;     // 2 min chunks → ~3.84 MB WAV per chunk
+const MAX_BYTES = 24 * 1024 * 1024; // 24MB safe limit (Whisper limit is 25MB)
+const CHUNK_DURATION_SEC = 600;     // 10 min chunks (comfortable for Whisper)
 const TARGET_SAMPLE_RATE = 16000;   // Whisper's native rate
 let currentFile = null;
 let audioDuration = null;
@@ -107,6 +112,8 @@ const controls    = document.getElementById('controls');
 const btnGo       = document.getElementById('btn-go');
 const btnClear    = document.getElementById('btn-clear');
 const stratNote   = document.getElementById('strategy-note');
+const apiKeyInput = document.getElementById('api-key');
+const apiStatus   = document.getElementById('api-status');
 const progressBlock = document.getElementById('progress-block');
 const progressLabel = document.getElementById('progress-label');
 const progressPct = document.getElementById('progress-pct');
@@ -118,6 +125,12 @@ const outputBlock = document.getElementById('output-block');
 const outputText  = document.getElementById('output-text');
 const btnCopy     = document.getElementById('btn-copy');
 const btnDownload = document.getElementById('btn-download');
+
+// ─── API KEY VALIDATION ───────────────────────────────────────────────────────
+apiKeyInput.addEventListener('input', () => {
+  const v = apiKeyInput.value.trim();
+  apiStatus.className = 'api-status' + (v.startsWith('sk-') && v.length > 20 ? ' ok' : '');
+});
 
 // ─── DRAG & DROP ──────────────────────────────────────────────────────────────
 dropZone.addEventListener('click', () => fileInput.click());
@@ -183,12 +196,14 @@ function updateStrategyNote(size) {
     const estDur = audioDuration ? fmtDuration(audioDuration) : '…';
     const estChunks = audioDuration ? Math.ceil(audioDuration / CHUNK_DURATION_SEC) : '?';
     stratNote.innerHTML = `Strategy: <span>COMPRESS → CHUNK</span><br>
-      Downsample to 16 kHz mono WAV · ${estChunks} chunk${estChunks !== 1 ? 's' : ''} of ≤2 min`;
+      Downsample to 16 kHz mono WAV · ${estChunks} chunk${estChunks !== 1 ? 's' : ''} of ≤10 min`;
   }
 }
 
 // ─── TRANSCRIBE BUTTON ────────────────────────────────────────────────────────
 btnGo.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) return showError('Please enter your OpenAI API key above.');
   if (!currentFile) return showError('No file selected.');
 
   btnGo.disabled = true;
@@ -199,11 +214,11 @@ btnGo.addEventListener('click', async () => {
   try {
     let transcript;
     if (currentFile.size < MAX_BYTES) {
-      transcript = await transcribeDirect(currentFile);
+      transcript = await transcribeDirect(currentFile, key);
       document.getElementById('stat-strategy').textContent = 'Direct send';
       document.getElementById('stat-chunks').textContent = '1';
     } else {
-      transcript = await transcribeWithProcessing(currentFile);
+      transcript = await transcribeWithProcessing(currentFile, key);
     }
 
     showOutput(transcript);
@@ -216,15 +231,15 @@ btnGo.addEventListener('click', async () => {
 });
 
 // ─── DIRECT SEND (file already under limit) ───────────────────────────────────
-async function transcribeDirect(file) {
-  log('File is under 4 MB — sending directly…', 'active');
-  const segments = await callWhisper(file, file.name, 0);
+async function transcribeDirect(file, key) {
+  log('File is under 25 MB — sending directly…', 'active');
+  const segments = await callWhisper(file, key, file.name, 0);
   log('Done.', 'done');
   return formatSegments(segments);
 }
 
 // ─── PROCESSING PIPELINE ─────────────────────────────────────────────────────
-async function transcribeWithProcessing(file) {
+async function transcribeWithProcessing(file, key) {
   log('Decoding audio…', 'active');
   setProgress(5);
 
@@ -269,7 +284,7 @@ async function transcribeWithProcessing(file) {
     log(`  Chunk size: ${fmtBytes(wavBlob.size)}`, 'done');
 
     const timeOffset = i * CHUNK_DURATION_SEC;
-    const segs = await callWhisper(wavBlob, `chunk_${i + 1}.wav`, timeOffset);
+    const segs = await callWhisper(wavBlob, key, `chunk_${i + 1}.wav`, timeOffset);
     allSegments.push(...segs);
     log(`  Chunk ${i + 1} done: ${segs.reduce((n, s) => n + s.text.trim().split(/\s+/).length, 0)} words`, 'done');
   }
@@ -326,14 +341,15 @@ function encodeWAV(samples, sampleRate) {
 }
 
 // ─── WHISPER API CALL ─────────────────────────────────────────────────────────
-async function callWhisper(fileOrBlob, filename, timeOffset = 0) {
+async function callWhisper(fileOrBlob, key, filename, timeOffset = 0) {
   const form = new FormData();
   form.append('file', fileOrBlob, filename);
   form.append('model', 'whisper-1');
   form.append('response_format', 'verbose_json');
 
-  const res = await fetch('/api/transcribe', {
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
+    headers: { 'Authorization': `Bearer ${key}` },
     body: form,
   });
 
