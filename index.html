@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TRANSCRIBE — Whisper API Tool</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="logo-word">Transcribe</span>
+    <span class="logo-tag">powered by whisper-1</span>
+  </div>
+  <div class="api-row">
+    <span class="api-label">OpenAI Key</span>
+    <input class="api-input" id="api-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+    <div class="api-status" id="api-status"></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- DROP ZONE -->
+  <div class="drop-zone" id="drop-zone">
+    <span class="drop-icon">🎙️</span>
+    <div class="drop-title">Drop audio file here</div>
+    <div class="drop-sub">or click to browse &nbsp;·&nbsp; mp3, m4a, wav, ogg, flac, webm, mp4 &nbsp;·&nbsp; any size<br>Files over <span>25 MB</span> are auto-compressed &amp; chunked</div>
+    <input type="file" id="file-input" accept="audio/*,video/mp4,video/webm">
+  </div>
+
+  <!-- FILE INFO -->
+  <div class="file-info" id="file-info">
+    <span class="file-icon">📄</span>
+    <div class="file-details">
+      <div class="file-name" id="file-name">—</div>
+      <div class="file-meta">
+        <span id="file-size-raw">—</span>
+        <span id="file-duration">—</span>
+        <span id="file-type">—</span>
+      </div>
+    </div>
+    <div class="size-badge ok" id="size-badge">UNDER LIMIT</div>
+  </div>
+
+  <!-- CONTROLS -->
+  <div class="controls" id="controls" style="display:none;">
+    <button class="btn-transcribe" id="btn-go">▶&nbsp;&nbsp;Transcribe</button>
+    <button class="btn-clear" id="btn-clear">✕ Clear</button>
+    <div class="strategy-note" id="strategy-note"></div>
+  </div>
+
+  <!-- PROGRESS -->
+  <div class="progress-block" id="progress-block">
+    <div class="progress-header">
+      <span class="progress-label pulsing" id="progress-label">Processing</span>
+      <span class="progress-pct" id="progress-pct">0%</span>
+    </div>
+    <div class="progress-bar-bg">
+      <div class="progress-bar-fill" id="progress-bar"></div>
+    </div>
+    <div class="progress-log" id="progress-log"></div>
+  </div>
+
+  <!-- ERROR -->
+  <div class="error-block" id="error-block">
+    <div class="error-title">⚠ Error</div>
+    <div class="error-msg" id="error-msg"></div>
+  </div>
+
+  <!-- OUTPUT -->
+  <div class="output-block" id="output-block">
+    <div class="output-header">
+      <span class="output-title">Transcription Complete</span>
+      <div class="output-actions">
+        <button class="btn-copy" id="btn-copy">Copy</button>
+        <button class="btn-download" id="btn-download">Download .txt</button>
+      </div>
+    </div>
+    <div class="output-text" id="output-text"></div>
+    <div class="output-stats">
+      <span class="stat">WORDS: <span id="stat-words">—</span></span>
+      <span class="stat">CHARS: <span id="stat-chars">—</span></span>
+      <span class="stat">CHUNKS: <span id="stat-chunks">—</span></span>
+      <span class="stat">STRATEGY: <span id="stat-strategy">—</span></span>
+    </div>
+  </div>
+
+</main>
+
+<footer>YOUR API KEY NEVER LEAVES YOUR BROWSER — ALL REQUESTS GO DIRECTLY TO OPENAI</footer>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────────────────────
+const MAX_BYTES = 24 * 1024 * 1024; // 24MB safe limit (Whisper limit is 25MB)
+const CHUNK_DURATION_SEC = 600;     // 10 min chunks (comfortable for Whisper)
+const TARGET_SAMPLE_RATE = 16000;   // Whisper's native rate
+let currentFile = null;
+let audioDuration = null;
+
+// ─── DOM ─────────────────────────────────────────────────────────────────────
+const dropZone    = document.getElementById('drop-zone');
+const fileInput   = document.getElementById('file-input');
+const fileInfo    = document.getElementById('file-info');
+const fileName    = document.getElementById('file-name');
+const fileSizeRaw = document.getElementById('file-size-raw');
+const fileDuration= document.getElementById('file-duration');
+const fileType    = document.getElementById('file-type');
+const sizeBadge   = document.getElementById('size-badge');
+const controls    = document.getElementById('controls');
+const btnGo       = document.getElementById('btn-go');
+const btnClear    = document.getElementById('btn-clear');
+const stratNote   = document.getElementById('strategy-note');
+const apiKeyInput = document.getElementById('api-key');
+const apiStatus   = document.getElementById('api-status');
+const progressBlock = document.getElementById('progress-block');
+const progressLabel = document.getElementById('progress-label');
+const progressPct = document.getElementById('progress-pct');
+const progressBar = document.getElementById('progress-bar');
+const progressLog = document.getElementById('progress-log');
+const errorBlock  = document.getElementById('error-block');
+const errorMsg    = document.getElementById('error-msg');
+const outputBlock = document.getElementById('output-block');
+const outputText  = document.getElementById('output-text');
+const btnCopy     = document.getElementById('btn-copy');
+const btnDownload = document.getElementById('btn-download');
+
+// ─── API KEY VALIDATION ───────────────────────────────────────────────────────
+apiKeyInput.addEventListener('input', () => {
+  const v = apiKeyInput.value.trim();
+  apiStatus.className = 'api-status' + (v.startsWith('sk-') && v.length > 20 ? ' ok' : '');
+});
+
+// ─── DRAG & DROP ──────────────────────────────────────────────────────────────
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) handleFile(fileInput.files[0]);
+});
+
+// ─── FILE HANDLING ────────────────────────────────────────────────────────────
+async function handleFile(f) {
+  currentFile = f;
+  audioDuration = null;
+  resetOutput();
+
+  fileName.textContent = f.name;
+  fileSizeRaw.innerHTML = `SIZE: ${fmtBytes(f.size)}`;
+  fileType.innerHTML = `TYPE: ${f.type || 'unknown'}`;
+  fileDuration.innerHTML = `DURATION: detecting…`;
+
+  updateSizeBadge(f.size);
+  fileInfo.classList.add('visible');
+  controls.style.display = 'flex';
+  updateStrategyNote(f.size);
+
+  // Detect duration
+  try {
+    const url = URL.createObjectURL(f);
+    const audio = new Audio();
+    audio.src = url;
+    audio.addEventListener('loadedmetadata', () => {
+      audioDuration = audio.duration;
+      fileDuration.innerHTML = `DURATION: ${fmtDuration(audioDuration)}`;
+      URL.revokeObjectURL(url);
+      updateStrategyNote(f.size);
+    });
+  } catch(e) {}
+}
+
+function updateSizeBadge(size) {
+  if (size < MAX_BYTES) {
+    sizeBadge.textContent = 'UNDER LIMIT';
+    sizeBadge.className = 'size-badge ok';
+  } else if (size < MAX_BYTES * 4) {
+    sizeBadge.textContent = 'WILL COMPRESS';
+    sizeBadge.className = 'size-badge warn';
+  } else {
+    sizeBadge.textContent = 'WILL CHUNK';
+    sizeBadge.className = 'size-badge bad';
+  }
+}
+
+function updateStrategyNote(size) {
+  if (size < MAX_BYTES) {
+    stratNote.innerHTML = 'Strategy: <span>DIRECT SEND</span><br>File is under the 25 MB limit.';
+  } else {
+    const estDur = audioDuration ? fmtDuration(audioDuration) : '…';
+    const estChunks = audioDuration ? Math.ceil(audioDuration / CHUNK_DURATION_SEC) : '?';
+    stratNote.innerHTML = `Strategy: <span>COMPRESS → CHUNK</span><br>
+      Downsample to 16 kHz mono WAV · ${estChunks} chunk${estChunks !== 1 ? 's' : ''} of ≤10 min`;
+  }
+}
+
+// ─── TRANSCRIBE BUTTON ────────────────────────────────────────────────────────
+btnGo.addEventListener('click', async () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) return showError('Please enter your OpenAI API key above.');
+  if (!currentFile) return showError('No file selected.');
+
+  btnGo.disabled = true;
+  resetOutput();
+  showProgress(true);
+  log('Starting…', 'active');
+
+  try {
+    let transcript;
+    if (currentFile.size < MAX_BYTES) {
+      transcript = await transcribeDirect(currentFile, key);
+      document.getElementById('stat-strategy').textContent = 'Direct send';
+      document.getElementById('stat-chunks').textContent = '1';
+    } else {
+      transcript = await transcribeWithProcessing(currentFile, key);
+    }
+
+    showOutput(transcript);
+  } catch(e) {
+    showError(e.message || String(e));
+  } finally {
+    btnGo.disabled = false;
+    showProgress(false);
+  }
+});
+
+// ─── DIRECT SEND (file already under limit) ───────────────────────────────────
+async function transcribeDirect(file, key) {
+  log('File is under 25 MB — sending directly…', 'active');
+  const segments = await callWhisper(file, key, file.name, 0);
+  log('Done.', 'done');
+  return formatSegments(segments);
+}
+
+// ─── PROCESSING PIPELINE ─────────────────────────────────────────────────────
+async function transcribeWithProcessing(file, key) {
+  log('Decoding audio…', 'active');
+  setProgress(5);
+
+  const arrayBuffer = await file.arrayBuffer();
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: TARGET_SAMPLE_RATE });
+
+  let audioBuffer;
+  try {
+    audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  } catch(e) {
+    throw new Error(`Could not decode audio: ${e.message}. Try converting the file to MP3 or WAV first.`);
+  }
+
+  log(`Decoded: ${fmtDuration(audioBuffer.duration)} at ${audioBuffer.sampleRate} Hz`, 'done');
+  setProgress(20);
+
+  // Resample to TARGET_SAMPLE_RATE mono (already resampled by AudioContext)
+  const monoBuffer = mixdownToMono(audioBuffer);
+
+  // Calculate chunks
+  const bytesPerSec = TARGET_SAMPLE_RATE * 2; // 16-bit mono
+  const chunkSamples = CHUNK_DURATION_SEC * TARGET_SAMPLE_RATE;
+  const totalSamples = monoBuffer.length;
+  const numChunks = Math.ceil(totalSamples / chunkSamples);
+
+  log(`Splitting into ${numChunks} chunk${numChunks > 1 ? 's' : ''} of ≤${CHUNK_DURATION_SEC / 60} min…`, 'active');
+  document.getElementById('stat-chunks').textContent = numChunks;
+  document.getElementById('stat-strategy').textContent = `Compress + ${numChunks} chunk${numChunks > 1 ? 's' : ''}`;
+
+  const allSegments = [];
+
+  for (let i = 0; i < numChunks; i++) {
+    const start = i * chunkSamples;
+    const end = Math.min(start + chunkSamples, totalSamples);
+    const chunkData = monoBuffer.subarray(start, end);
+
+    const pct = 20 + Math.round(((i + 0.5) / numChunks) * 75);
+    setProgress(pct);
+    log(`Transcribing chunk ${i + 1} / ${numChunks} (${fmtDuration((end - start) / TARGET_SAMPLE_RATE)})…`, 'active');
+
+    const wavBlob = encodeWAV(chunkData, TARGET_SAMPLE_RATE);
+    log(`  Chunk size: ${fmtBytes(wavBlob.size)}`, 'done');
+
+    const timeOffset = i * CHUNK_DURATION_SEC;
+    const segs = await callWhisper(wavBlob, key, `chunk_${i + 1}.wav`, timeOffset);
+    allSegments.push(...segs);
+    log(`  Chunk ${i + 1} done: ${segs.reduce((n, s) => n + s.text.trim().split(/\s+/).length, 0)} words`, 'done');
+  }
+
+  setProgress(100);
+  log('All chunks complete — stitching…', 'done');
+
+  audioCtx.close();
+  return formatSegments(allSegments);
+}
+
+// ─── AUDIO UTILITIES ──────────────────────────────────────────────────────────
+function mixdownToMono(audioBuffer) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const len = audioBuffer.length;
+  const out = new Float32Array(len);
+  for (let c = 0; c < numChannels; c++) {
+    const ch = audioBuffer.getChannelData(c);
+    for (let i = 0; i < len; i++) out[i] += ch[i];
+  }
+  if (numChannels > 1) {
+    for (let i = 0; i < len; i++) out[i] /= numChannels;
+  }
+  return out;
+}
+
+function encodeWAV(samples, sampleRate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  const clamp16 = v => Math.max(-1, Math.min(1, v));
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);       // PCM
+  view.setUint16(22, 1, true);       // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    view.setInt16(offset, clamp16(samples[i]) * 0x7fff, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// ─── WHISPER API CALL ─────────────────────────────────────────────────────────
+async function callWhisper(fileOrBlob, key, filename, timeOffset = 0) {
+  const form = new FormData();
+  form.append('file', fileOrBlob, filename);
+  form.append('model', 'whisper-1');
+  form.append('response_format', 'verbose_json');
+
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${key}` },
+    body: form,
+  });
+
+  if (!res.ok) {
+    let errText = '';
+    try { const j = await res.json(); errText = j.error?.message || JSON.stringify(j); } catch(e) {}
+    throw new Error(`OpenAI API error ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json();
+  return (json.segments || []).map(seg => ({
+    start: seg.start + timeOffset,
+    end:   seg.end   + timeOffset,
+    text:  seg.text
+  }));
+}
+
+// ─── TRANSCRIPT FORMATTING ────────────────────────────────────────────────────
+function formatSegments(segments) {
+  if (!segments || segments.length === 0) return '';
+  let result = '';
+  let paraTexts = [];
+  let paraStart = segments[0].start;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const prev = segments[i - 1];
+    const gap = prev ? seg.start - prev.end : 0;
+
+    if (i > 0 && gap > 1.5) {
+      result += `[${fmtTimestamp(paraStart)}] ${paraTexts.join(' ')}\n\n`;
+      paraTexts = [];
+      paraStart = seg.start;
+    }
+    paraTexts.push(seg.text.trim());
+  }
+  if (paraTexts.length > 0) {
+    result += `[${fmtTimestamp(paraStart)}] ${paraTexts.join(' ')}`;
+  }
+  return result.trim();
+}
+
+function fmtTimestamp(secs) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// ─── OUTPUT ───────────────────────────────────────────────────────────────────
+function showOutput(text) {
+  outputText.textContent = text;
+  const plainText = text.replace(/\[\d+:\d+\]/g, '').trim();
+  const words = plainText.split(/\s+/).filter(Boolean).length;
+  document.getElementById('stat-words').textContent = words.toLocaleString();
+  document.getElementById('stat-chars').textContent = plainText.length.toLocaleString();
+  outputBlock.classList.add('visible');
+}
+
+btnCopy.addEventListener('click', () => {
+  navigator.clipboard.writeText(outputText.textContent);
+  btnCopy.textContent = 'Copied!';
+  setTimeout(() => btnCopy.textContent = 'Copy', 1800);
+});
+
+btnDownload.addEventListener('click', () => {
+  const blob = new Blob([outputText.textContent], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const baseName = currentFile ? currentFile.name.replace(/\.[^.]+$/, '') : 'transcription';
+  a.download = `${baseName}_transcript.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ─── UI HELPERS ───────────────────────────────────────────────────────────────
+function showProgress(on) {
+  progressBlock.classList.toggle('visible', on);
+  if (on) { progressLog.innerHTML = ''; setProgress(0); }
+}
+
+function setProgress(pct) {
+  progressBar.style.width = pct + '%';
+  progressPct.textContent = pct + '%';
+}
+
+function log(msg, cls = '') {
+  const line = document.createElement('span');
+  line.className = 'log-line' + (cls ? ' ' + cls : '');
+  line.textContent = '› ' + msg;
+  progressLog.appendChild(line);
+  progressLog.scrollTop = progressLog.scrollHeight;
+}
+
+function showError(msg) {
+  errorMsg.textContent = msg;
+  errorBlock.classList.add('visible');
+}
+
+function resetOutput() {
+  outputBlock.classList.remove('visible');
+  errorBlock.classList.remove('visible');
+  outputText.textContent = '';
+  progressLog.innerHTML = '';
+  ['stat-words','stat-chars','stat-chunks','stat-strategy'].forEach(id => {
+    document.getElementById(id).textContent = '—';
+  });
+}
+
+btnClear.addEventListener('click', () => {
+  currentFile = null;
+  fileInfo.classList.remove('visible');
+  controls.style.display = 'none';
+  fileInput.value = '';
+  resetOutput();
+  showProgress(false);
+});
+
+// ─── FORMATTERS ───────────────────────────────────────────────────────────────
+function fmtBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024 ** 2) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1024 ** 2).toFixed(2) + ' MB';
+}
+
+function fmtDuration(s) {
+  if (!s || isNaN(s)) return '—';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+</script>
+</body>
+</html>
