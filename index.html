@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TRANSCRIBE — Whisper API Tool</title>
 <link rel="stylesheet" href="styles.css">
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
 </head>
 <body>
 
@@ -201,7 +201,7 @@ async function convertAmrToWav(file) {
     const { createFFmpeg } = FFmpeg;
     ffmpegInstance = createFFmpeg({
       log: false,
-      corePath: 'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js',
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js',
     });
     await ffmpegInstance.load();
   }
