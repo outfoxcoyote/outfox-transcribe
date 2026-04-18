@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TRANSCRIBE — Whisper API Tool</title>
 <link rel="stylesheet" href="styles.css">
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 </head>
 <body>
 
@@ -187,6 +188,33 @@ function updateStrategyNote(size) {
   }
 }
 
+// ─── AMR CONVERSION ───────────────────────────────────────────────────────────
+let ffmpegInstance = null;
+
+function isAmrFile(file) {
+  return /\.amr$/i.test(file.name) || file.type === 'audio/amr' || file.type === 'audio/x-amr';
+}
+
+async function convertAmrToWav(file) {
+  log('Loading audio converter for AMR…', 'active');
+  if (!ffmpegInstance) {
+    const { createFFmpeg } = FFmpeg;
+    ffmpegInstance = createFFmpeg({
+      log: false,
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+    });
+    await ffmpegInstance.load();
+  }
+  log('Converting AMR → WAV…', 'active');
+  ffmpegInstance.FS('writeFile', 'input.amr', await FFmpeg.fetchFile(file));
+  await ffmpegInstance.run('-i', 'input.amr', '-ar', '16000', '-ac', '1', 'output.wav');
+  const data = ffmpegInstance.FS('readFile', 'output.wav');
+  ffmpegInstance.FS('unlink', 'input.amr');
+  ffmpegInstance.FS('unlink', 'output.wav');
+  log('Conversion done.', 'done');
+  return new File([data.buffer], file.name.replace(/\.amr$/i, '.wav'), { type: 'audio/wav' });
+}
+
 // ─── TRANSCRIBE BUTTON ────────────────────────────────────────────────────────
 btnGo.addEventListener('click', async () => {
   if (!currentFile) return showError('No file selected.');
@@ -197,13 +225,18 @@ btnGo.addEventListener('click', async () => {
   log('Starting…', 'active');
 
   try {
+    let fileToProcess = currentFile;
+    if (isAmrFile(currentFile)) {
+      fileToProcess = await convertAmrToWav(currentFile);
+    }
+
     let transcript;
-    if (currentFile.size < MAX_BYTES) {
-      transcript = await transcribeDirect(currentFile);
+    if (fileToProcess.size < MAX_BYTES) {
+      transcript = await transcribeDirect(fileToProcess);
       document.getElementById('stat-strategy').textContent = 'Direct send';
       document.getElementById('stat-chunks').textContent = '1';
     } else {
-      transcript = await transcribeWithProcessing(currentFile);
+      transcript = await transcribeWithProcessing(fileToProcess);
     }
 
     showOutput(transcript);
