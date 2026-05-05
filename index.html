@@ -22,7 +22,7 @@
   <div class="drop-zone" id="drop-zone">
     <span class="drop-icon">🎙️</span>
     <div class="drop-title">Drop audio file here</div>
-    <div class="drop-sub">or click to browse &nbsp;·&nbsp; mp3, m4a, wav, ogg, flac, webm, mp4, amr &nbsp;·&nbsp; any size<br>Files over <span>25 MB</span> are auto-compressed &amp; chunked</div>
+    <div class="drop-sub">or click to browse &nbsp;·&nbsp; mp3, m4a, wav, ogg, flac, webm, mp4, amr &nbsp;·&nbsp; any size<br>Files over <span>4 MB</span> are auto-compressed &amp; chunked</div>
     <input type="file" id="file-input" accept="audio/*,video/mp4,video/webm,.amr,audio/amr">
   </div>
 
@@ -89,8 +89,8 @@
 
 <script>
 // ─── STATE ────────────────────────────────────────────────────────────────────
-const MAX_BYTES = 24 * 1024 * 1024; // 24MB safe limit (Whisper limit is 25MB)
-const CHUNK_DURATION_SEC = 600;     // 10 min chunks (comfortable for Whisper)
+const MAX_BYTES = 4 * 1024 * 1024;  // Vercel body limit is 4.5 MB; stay under it
+const CHUNK_DURATION_SEC = 110;     // 110 s × 16kHz × 2 B = ~3.4 MB WAV per chunk
 const TARGET_SAMPLE_RATE = 16000;   // Whisper's native rate
 let currentFile = null;
 let audioDuration = null;
@@ -179,12 +179,12 @@ function updateSizeBadge(size) {
 
 function updateStrategyNote(size) {
   if (size < MAX_BYTES) {
-    stratNote.innerHTML = 'Strategy: <span>DIRECT SEND</span><br>File is under the 25 MB limit.';
+    stratNote.innerHTML = 'Strategy: <span>DIRECT SEND</span><br>File is under the 4 MB proxy limit.';
   } else {
     const estDur = audioDuration ? fmtDuration(audioDuration) : '…';
     const estChunks = audioDuration ? Math.ceil(audioDuration / CHUNK_DURATION_SEC) : '?';
     stratNote.innerHTML = `Strategy: <span>COMPRESS → CHUNK</span><br>
-      Downsample to 16 kHz mono WAV · ${estChunks} chunk${estChunks !== 1 ? 's' : ''} of ≤10 min`;
+      Downsample to 16 kHz mono WAV · ${estChunks} chunk${estChunks !== 1 ? 's' : ''} of ≤110 s`;
   }
 }
 
